@@ -21,7 +21,7 @@ class Config:
 
     MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
     MAX_NEW_TOKENS = 4096
-    TEMPERATURE = 0.1
+    BASE_TEMPERATURE = 0.1
     TOP_P = 0.95
 
     USE_FP16 = True
@@ -62,7 +62,8 @@ print("Reference problems loaded")
 class MultiGPUModelManager:
     """
     Manages model loading across 2x T4 GPUs.
-    Uses automatic device mapping for optimal memory distribution."""
+    Uses automatic device mapping for optimal memory distribution.
+    """
 
     def __init__(self):
         self.model = None
@@ -99,5 +100,116 @@ class MultiGPUModelManager:
             self.device = next(self.model.parameters()).device()
             print(f"Model loaded on device: {self.device}")
 
-        print(f"Model ready")
+        print("Model ready.")
         return self
+
+    def generate(self, prompt: str, temperature: float = None) -> str:
+        """Generate response with specified temperature"""
+        if self.model is None:
+            return self.load()
+
+        temp = temperature if temperature is not None else Config.BASE_TEMPERATURE
+
+        # Format as chat
+        messages = [{"role": "user", "content": prompt}]
+        text = self.tokenizer.apply_chat_template(
+            messages=messages, tokenize=False, add_generation_prompt=True
+        )
+
+        # Tokenize
+        inputs = self.tokenizer(text, return_tensors="pt")
+
+        # Move to appropriate device
+        if hasattr(self.model, "hf_device_map"):
+            # Model is already shared across 2 GPUs
+            pass
+        else:
+            inputs = inputs.to(self.device)
+
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=Config.MAX_NEW_TOKENS,
+                temperature=temp,
+                top_p=Config.TOP_P,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id,
+                num_return_sequences=1,
+            )
+
+        # Decode
+        response = self.tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1] :], skip_specaial_tokens=True
+        )
+
+        return response.strip()
+
+    def generate_batch(self, prompts: List[str], temperature: float) -> List[str]:
+        """
+        Generates multiple responses in sequence (for consensus voting)
+        Returns list of strings
+        """
+        responses = []
+        for prompt in prompts:
+            response = self.model.generate(prompt, temperature)
+            responses.append(response)
+        return responses
+
+
+# Global model manager (lazy loading)
+manager = MultiGPUModelManager()
+print("Model manager initialized successfully")
+
+# Domain-specific solving instructions
+DOMAIN_INSTRUCTIONS = {
+    "algebra": """For this algebra problem:
+    - Identify key variables and equations
+    - Use substitution, elimination, or factorization
+    - Check for special cases and edge conditions
+    - Verify your solution satisfies the original equation""",
+    "geometry": """For this geometry problem:
+    - Use pure synthetic reasoning (theorems, not coordinates)
+    - Apply circle theorems, triangle properties, angle chasing
+    - Look for cyclic quadrilaterals, power of a point
+    - Draw auxiliary lines when helpful""",
+    "combinatorics": """For this combinatorics problem:
+    - Identify if counting, probability, or existence
+    - Consider permutations, combinations, inclusion-exclusion
+    - Look for symmetries and bijections
+    - Check small cases first to identify patterns""",
+    "number_theory": """For this number theory problem:
+    - Consider divisibility, prime factorization, modular arithmetic
+    - Apply Fermat's Little Theorem, Euler's theorem, CRT
+    - Look for patterns in residues modulo small primes
+    - Use Euclidean algorithm for gcd/lcm""",
+    "unknown": "Use general mathematical reasoning and careful step-by-step analysis.",
+}
+
+
+class BaseAgent:
+    """Base class for all agents"""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def run(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+class AnalyzerAgent(BaseAgent):
+    """Analyzer for the problems to recognize the domain."""
+
+    def __init__(self):
+        super().__init__(BaseAgent)
+
+    def run(self, problem: str) -> Dict:
+        "Analyze the problem and return structured information."
+        prompt = f"""You are a mathematical problem ananlyzer to identify the correct domains and method to find the solution. (IMO/AIME level)
+        {REFERENCE_PROBLEMS}
+
+        Now analyze this problem.
+        Problem: {problem}
+
+        You MUST respond with a valid python dictionary in exactly this format:
+            """
