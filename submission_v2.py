@@ -36,9 +36,9 @@ print("✓ Imports successful")
 class Config:
     """Configuration for consensus voting system."""
 
-    # Model configuration - Qwen2.5-32B-Instruct from Kaggle dataset
-    # Using local Kaggle dataset: gmhost/qwen2-5-32b-instruct-quant
-    MODEL_NAME = "/kaggle/input/qwen2-5-32b-instruct-quant/"
+    # Model configuration - DeepSeek-Math-7B-Instruct from Kaggle dataset
+    # Using local Kaggle dataset: markwijkhuizen/deepseek-math-7b-instruct
+    MODEL_NAME = "/kaggle/input/deepseek-math-7b-instruct/"
     MAX_NEW_TOKENS = 4096
     BASE_TEMPERATURE = 0.1
     TOP_P = 0.95
