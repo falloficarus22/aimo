@@ -107,32 +107,85 @@ class MultiGPUModelManager:
         self.device = None
         self.num_gpus = torch.cuda.device_count()
 
+    def _find_model_path(self):
+        """Search for the model files in Kaggle input directories."""
+        import glob
+
+        # First check the configured path
+        if os.path.exists(Config.MODEL_NAME):
+            files = os.listdir(Config.MODEL_NAME)
+            if any(f.endswith((".bin", ".safetensors", "config.json")) for f in files):
+                return Config.MODEL_NAME
+
+        # Search recursively in /kaggle/input/
+        print("Searching for model files in /kaggle/input/...")
+        for root, dirs, files in os.walk("/kaggle/input/"):
+            # Look for config.json which indicates a model directory
+            if "config.json" in files:
+                print(f"Found model directory: {root}")
+                # Verify it has model weights
+                if any(f.endswith((".bin", ".safetensors")) for f in files):
+                    return root
+
+        # If not found, list all directories for debugging
+        print("All directories in /kaggle/input/:")
+        for root, dirs, files in os.walk("/kaggle/input/"):
+            level = root.replace("/kaggle/input/", "").count(os.sep)
+            indent = " " * 2 * level
+            print(f"{indent}{os.path.basename(root)}/")
+            subindent = " " * 2 * (level + 1)
+            for file in files[:5]:  # Show first 5 files
+                print(f"{subindent}{file}")
+
+        return None
+
     def load(self):
         """Load model across available GPUs."""
         if self.model is not None:
             return self
 
-        print(f"Loading {Config.MODEL_NAME}...")
+        print(f"Loading model from configured path: {Config.MODEL_NAME}")
         print(f"Available GPUs: {self.num_gpus}")
+
+        # Find the actual model path
+        model_path = self._find_model_path()
+
+        if model_path is None:
+            raise FileNotFoundError(f"Could not find model files in /kaggle/input/")
+
+        print(f"✓ Found model at: {model_path}")
+
+        # List files in the directory
+        files = os.listdir(model_path)
+        print(f"Files in model directory: {files[:10]}...")  # Show first 10 files
 
         # Set memory limits per GPU (T4 has ~16GB each)
         max_memory = {i: "15GiB" for i in range(self.num_gpus)}
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            Config.MODEL_NAME, trust_remote_code=True, local_files_only=True
-        )
+        try:
+            # Load tokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=True, local_files_only=True
+            )
+            print("✓ Tokenizer loaded")
 
-        # Load model with automatic device mapping
-        self.model = AutoModelForCausalLM.from_pretrained(
-            Config.MODEL_NAME,
-            torch_dtype=torch.float16 if Config.USE_FP16 else torch.float32,
-            device_map=Config.DEVICE_MAP,
-            max_memory=max_memory,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True,
-            local_files_only=True,
-        )
+            # Load model with automatic device mapping
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16 if Config.USE_FP16 else torch.float32,
+                device_map=Config.DEVICE_MAP,
+                max_memory=max_memory,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                local_files_only=True,
+            )
+            print("✓ Model loaded")
+        except Exception as e:
+            print(f"ERROR loading model: {e}")
+            print(f"Model path content:")
+            for f in os.listdir(model_path):
+                print(f"  - {f}")
+            raise
 
         # Check device allocation
         if hasattr(self.model, "hf_device_map"):
